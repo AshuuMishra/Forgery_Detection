@@ -317,27 +317,26 @@ def validate_image(image_pil):
 
     # Check 1 — resolution too low
     if h < 100 or w < 100:
-        return False, "Image resolution too low (minimum 100×100 pixels). Please upload a clearer scan.", True
+        return False, "Image resolution too low (minimum 100×100 pixels). Please upload a clearer image.", True
 
-    # Check 2 — aspect ratio (extreme ratios = not a document)
+    # Check 2 — extreme aspect ratio
     ratio = h / w
     if ratio < 0.2 or ratio > 6.0:
-        return False, "Image dimensions look unusual for a document. Please upload a standard portrait or landscape document.", True
+        return False, "Image dimensions look unusual. Please upload a standard document or photo.", True
 
-    # Check 3 — ELA mean (web images / screenshots have higher compression noise)
+    # Check 3 — ELA mean check (warn only, never block camera/phone photos)
     ela_mean = compute_ela_mean(image_pil)
     if ela_mean > 20:
-        return False, (
-            f"Image appears to be a screenshot or heavily compressed web image "
-            f"(ELA score: {ela_mean:.1f}). This model works best on scanned documents. "
-            f"Results would be unreliable."
-        ), True
+        return True, (
+            f"Image has heavy compression artifacts (ELA score: {ela_mean:.1f}). "
+            f"This may affect accuracy — results should be treated as indicative only."
+        ), False  # warn but allow — phone/camera photos are valid inputs
 
-    # Check 4 — low confidence warning zone (ELA 10-20, usable but uncertain)
+    # Check 4 — moderate compression warning
     if ela_mean > 10:
         return True, (
-            f"Image quality is moderate (ELA score: {ela_mean:.1f}). "
-            f"For best results, use a direct scan rather than a photo or screenshot."
+            f"Moderate image compression detected (ELA score: {ela_mean:.1f}). "
+            f"Results may be slightly less accurate."
         ), False
 
     return True, None, False
@@ -449,26 +448,24 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # FIX 7: Added supported/unsupported image guidance in sidebar
     st.markdown("### ✅ Supported Images")
     st.markdown("""
     <div class="supported-box">
-    ✓ Scanned prescriptions<br>
-    ✓ Scanned medical reports<br>
-    ✓ Scanned certificates / IDs<br>
-    ✓ Direct scanner output (JPG/PNG)<br>
-    ✓ PDF pages exported as image
+    ✓ Phone / camera photos of documents<br>
+    ✓ Scanned prescriptions &amp; medical reports<br>
+    ✓ General photos (nature, objects, people)<br>
+    ✓ AI-generated image detection<br>
+    ✓ Certificates, IDs, any JPG/PNG
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("### ❌ Not Supported")
+    st.markdown("### ⚠️ May Give Unreliable Results")
     st.markdown("""
     <div class="unsupported-box">
-    ✗ Screenshots of documents<br>
-    ✗ Web downloaded images<br>
-    ✗ WhatsApp / Telegram photos<br>
-    ✗ Social media images<br>
-    ✗ Photos of printed documents
+    ✗ Screenshots (compressed multiple times)<br>
+    ✗ WhatsApp / Telegram forwarded images<br>
+    ✗ Images downloaded from websites<br>
+    ✗ Very low resolution (under 100px)
     </div>
     """, unsafe_allow_html=True)
 
@@ -483,11 +480,12 @@ col_upload, col_result = st.columns([1, 1], gap="large")
 with col_upload:
     st.markdown("### 📁 Upload Image")
 
-    # FIX 8: Added guidance text above uploader
+    # Updated guidance — camera photos and general images are supported
     st.markdown("""
     <div class="info-box">
-    ℹ️ For best results upload a <strong>scanned document</strong> saved directly from your scanner.
-    Screenshots and web images are not supported.
+    ℹ️ Upload any document scan, camera photo, or general image.
+    Works best on direct scans and camera photos.
+    Screenshots and heavily compressed web images may give less accurate results.
     </div>
     """, unsafe_allow_html=True)
 
@@ -505,10 +503,10 @@ with col_upload:
         st.markdown("""
         <div class="upload-zone">
             <div style="font-size:3rem;">📄</div>
-            <div style="margin-top:0.5rem;">Drop a scanned document here or click to browse</div>
+            <div style="margin-top:0.5rem;">Drop an image here or click to browse</div>
             <div style="font-size:0.8rem;margin-top:0.3rem;">Supports JPG, PNG, BMP, TIF</div>
             <div style="font-size:0.75rem;margin-top:0.5rem;color:#444466;">
-                Prescriptions · Medical Reports · Certificates · ID Documents
+                Documents · Photos · Prescriptions · Certificates · General Images
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -526,7 +524,6 @@ with col_result:
                 is_valid, validation_msg, is_blocked = validate_image(image_pil)
 
                 if is_blocked:
-                    # Show blocked message — do not run predict
                     st.markdown(f"""
                     <div class="result-warning">
                         <div class="result-title">⚠️ CANNOT PROCESS</div>
@@ -534,10 +531,11 @@ with col_result:
                             {validation_msg}
                         </div>
                         <div style="margin-top:1rem;font-size:0.85rem;color:#aaaacc;">
-                            <strong>Please upload:</strong><br>
-                            • A scanned prescription or medical document<br>
-                            • Saved directly from scanner as JPG or PNG<br>
-                            • Not a screenshot or web-downloaded image
+                            <strong>Supported inputs:</strong><br>
+                            • Phone or camera photo of any document<br>
+                            • Scanned prescription, report, certificate<br>
+                            • General photos (nature, objects, people)<br>
+                            • Any JPG/PNG with minimum 100×100 resolution
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
@@ -620,6 +618,6 @@ with col_result:
         st.markdown("""
         <div style="color:#3a3a5a;text-align:center;padding:3rem 0;
                     font-family:'Space Mono',monospace;font-size:0.9rem;">
-            Upload a scanned document and click<br>Analyze to see results here
+            Upload an image and click<br>Analyze to see results here
         </div>
         """, unsafe_allow_html=True)
