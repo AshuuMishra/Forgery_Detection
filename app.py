@@ -69,6 +69,14 @@ section[data-testid="stSidebar"] {
     margin: 1rem 0;
 }
 
+.result-warning {
+    background: linear-gradient(135deg, #1a1500 0%, #2a2000 100%);
+    border: 1px solid #ffaa00;
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+}
+
 .result-title {
     font-family: 'Space Mono', monospace;
     font-size: 1.8rem;
@@ -76,8 +84,9 @@ section[data-testid="stSidebar"] {
     margin-bottom: 0.5rem;
 }
 
-.result-forged .result-title  { color: #ff3366; }
+.result-forged .result-title   { color: #ff3366; }
 .result-authentic .result-title { color: #00ff9d; }
+.result-warning .result-title   { color: #ffaa00; }
 .result-meta  { font-size: 0.9rem; color: #8888aa; margin-bottom: 0.3rem; }
 .result-value { font-family: 'Space Mono', monospace; font-size: 1rem; color: #e8e8f0; font-weight: 700; }
 
@@ -98,7 +107,8 @@ section[data-testid="stSidebar"] {
     color: #aaaacc;
     margin-top: 0.5rem;
 }
-.desc-box-forged { border-left-color: #ff3366; }
+.desc-box-forged  { border-left-color: #ff3366; }
+.desc-box-warning { border-left-color: #ffaa00; }
 
 .type-badge {
     display: inline-block;
@@ -112,9 +122,50 @@ section[data-testid="stSidebar"] {
     margin-top: 0.5rem;
 }
 
-.conf-bar-bg          { background: #1e1e35; border-radius: 100px; height: 8px; margin-top: 0.5rem; overflow: hidden; }
-.conf-bar-fill-forged { background: linear-gradient(90deg, #ff3366, #ff6b6b); height: 100%; border-radius: 100px; }
-.conf-bar-fill-auth   { background: linear-gradient(90deg, #00ff9d, #00ccff); height: 100%; border-radius: 100px; }
+.warning-box {
+    background: #1a1500;
+    border: 1px solid #ffaa00;
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    font-size: 0.85rem;
+    color: #ffcc44;
+    margin: 0.5rem 0;
+}
+
+.info-box {
+    background: #0a1020;
+    border: 1px solid #0066cc;
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    font-size: 0.85rem;
+    color: #66aaff;
+    margin: 0.5rem 0;
+}
+
+.supported-box {
+    background: #0a150f;
+    border: 1px solid #00aa55;
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    font-size: 0.85rem;
+    color: #44cc88;
+    margin: 0.3rem 0;
+}
+
+.unsupported-box {
+    background: #150a0a;
+    border: 1px solid #aa3333;
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    font-size: 0.85rem;
+    color: #ff6666;
+    margin: 0.3rem 0;
+}
+
+.conf-bar-bg            { background: #1e1e35; border-radius: 100px; height: 8px; margin-top: 0.5rem; overflow: hidden; }
+.conf-bar-fill-forged   { background: linear-gradient(90deg, #ff3366, #ff6b6b); height: 100%; border-radius: 100px; }
+.conf-bar-fill-auth     { background: linear-gradient(90deg, #00ff9d, #00ccff); height: 100%; border-radius: 100px; }
+.conf-bar-fill-warning  { background: linear-gradient(90deg, #ffaa00, #ffdd44); height: 100%; border-radius: 100px; }
 
 #MainMenu {visibility: hidden;}
 footer    {visibility: hidden;}
@@ -241,14 +292,79 @@ FORGERY_DESCRIPTIONS = {
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+# ── FIX 1: Image validator — added here, runs before predict ──────────────────
+def compute_ela_mean(image_pil):
+    """Compute ELA mean to detect unsuitable images (web/screenshot)."""
+    img_rgb = np.array(image_pil.convert("RGB"))
+    img_rgb = cv2.resize(img_rgb, (224, 224))
+    buf     = io.BytesIO()
+    Image.fromarray(img_rgb).save(buf, format="JPEG", quality=90)
+    buf.seek(0)
+    recompressed = np.array(Image.open(buf)).astype(np.float32)
+    ela          = np.abs(img_rgb.astype(np.float32) - recompressed)
+    return ela.mean()
+
+
+def validate_image(image_pil):
+    """
+    Validates image before prediction.
+    Returns (is_valid, warning_message, is_blocked)
+    is_blocked=True  → refuse to process
+    is_blocked=False → warn but allow
+    """
+    img_rgb = np.array(image_pil.convert("RGB"))
+    h, w    = img_rgb.shape[:2]
+
+    # Check 1 — resolution too low
+    if h < 100 or w < 100:
+        return False, "Image resolution too low (minimum 100×100 pixels). Please upload a clearer scan.", True
+
+    # Check 2 — aspect ratio (extreme ratios = not a document)
+    ratio = h / w
+    if ratio < 0.2 or ratio > 6.0:
+        return False, "Image dimensions look unusual for a document. Please upload a standard portrait or landscape document.", True
+
+    # Check 3 — ELA mean (web images / screenshots have higher compression noise)
+    ela_mean = compute_ela_mean(image_pil)
+    if ela_mean > 20:
+        return False, (
+            f"Image appears to be a screenshot or heavily compressed web image "
+            f"(ELA score: {ela_mean:.1f}). This model works best on scanned documents. "
+            f"Results would be unreliable."
+        ), True
+
+    # Check 4 — low confidence warning zone (ELA 10-20, usable but uncertain)
+    if ela_mean > 10:
+        return True, (
+            f"Image quality is moderate (ELA score: {ela_mean:.1f}). "
+            f"For best results, use a direct scan rather than a photo or screenshot."
+        ), False
+
+    return True, None, False
+
+
 # ── Model loader ──────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_model():
-    model_path = "full_model.pth"  # ← same folder as app.py in repo
+    # FIX 2: Load state_dict weights, not full model object
+    model_path = "model_weights.pth"
     if not os.path.exists(model_path):
+        # Fallback: try old full_model.pth for backward compatibility
+        fallback_path = "full_model.pth"
+        if os.path.exists(fallback_path):
+            try:
+                model = torch.load(fallback_path, map_location=DEVICE, weights_only=False)
+                model.eval()
+                return model
+            except Exception as e:
+                st.error(f"Failed to load model: {e}")
+                return None
         return None
     try:
-        model = torch.load(model_path, map_location=DEVICE, weights_only=False)
+        model = ForgeryDetector().to(DEVICE)
+        model.load_state_dict(
+            torch.load(model_path, map_location=DEVICE)
+        )
         model.eval()
         return model
     except Exception as e:
@@ -256,25 +372,33 @@ def load_model():
         return None
 
 
-# ── Predict ───────────────────────────────────────────────────────────────────
-def predict(image_pil, model, threshold=0.5):
-    image_rgb       = np.array(image_pil.convert("RGB"))
-    image_rgb       = cv2.resize(image_rgb, (224, 224))
+# ── FIX 3: Predict with threshold=0.40 and confidence gate ───────────────────
+def predict(image_pil, model, threshold=0.40):
+    image_rgb = np.array(image_pil.convert("RGB"))
+    image_rgb = cv2.resize(image_rgb, (224, 224))
 
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
 
-    tensor       = transform(Image.fromarray(image_rgb)).unsqueeze(0).to(DEVICE)
+    tensor = transform(Image.fromarray(image_rgb)).unsqueeze(0).to(DEVICE)
 
     with torch.no_grad():
         cls_out, type_out, seg_out = model(tensor)
 
-    confidence   = float(torch.sigmoid(cls_out).item())
-    confidence   = max(0.0, min(1.0, confidence))
-    is_forged    = confidence > threshold
-    forgery_type = TYPE_MAP_INV.get(torch.argmax(type_out, dim=1).item(), "unknown") if is_forged else "none"
+    confidence = float(torch.sigmoid(cls_out).item())
+    confidence = max(0.0, min(1.0, confidence))
+    is_forged  = confidence > threshold
+
+    # FIX 4: Confidence gate — flag uncertain predictions
+    distance        = abs(confidence - 0.5)
+    low_confidence  = distance < 0.15
+
+    # FIX 5: TYPE_MAP_INV fallback to "none" not "unknown"
+    forgery_type = TYPE_MAP_INV.get(
+        torch.argmax(type_out, dim=1).item(), "none"
+    ) if is_forged else "none"
 
     heatmap         = torch.sigmoid(seg_out).squeeze().cpu().float().numpy()
     if heatmap.ndim == 0:
@@ -285,13 +409,14 @@ def predict(image_pil, model, threshold=0.5):
     overlay         = cv2.addWeighted(image_rgb, 0.6, heatmap_colored, 0.4, 0)
 
     return {
-        "is_forged"   : is_forged,
-        "confidence"  : confidence,
-        "forgery_type": forgery_type,
-        "description" : FORGERY_DESCRIPTIONS.get(forgery_type, ""),
-        "image_rgb"   : image_rgb,
-        "heatmap"     : heatmap_resized,
-        "overlay"     : overlay
+        "is_forged"      : is_forged,
+        "confidence"     : confidence,
+        "forgery_type"   : forgery_type,
+        "description"    : FORGERY_DESCRIPTIONS.get(forgery_type, ""),
+        "low_confidence" : low_confidence,
+        "image_rgb"      : image_rgb,
+        "heatmap"        : heatmap_resized,
+        "overlay"        : overlay
     }
 
 
@@ -306,10 +431,11 @@ with st.sidebar:
     st.markdown("### ⚙️ Configuration")
     st.markdown("---")
 
+    # FIX 6: Default threshold changed from 0.5 to 0.40
     threshold = st.slider(
         "Detection Threshold",
-        min_value=0.1, max_value=0.9, value=0.5, step=0.05,
-        help="Higher = stricter forgery detection"
+        min_value=0.1, max_value=0.9, value=0.40, step=0.05,
+        help="Recommended: 0.40. Higher = stricter forgery detection, may miss some forgeries. Lower = more sensitive, may flag authentic images."
     )
 
     st.markdown("---")
@@ -322,7 +448,32 @@ with st.sidebar:
     """)
 
     st.markdown("---")
-    st.success("✅ Model loaded") if model else st.error("❌ Model not found")
+
+    # FIX 7: Added supported/unsupported image guidance in sidebar
+    st.markdown("### ✅ Supported Images")
+    st.markdown("""
+    <div class="supported-box">
+    ✓ Scanned prescriptions<br>
+    ✓ Scanned medical reports<br>
+    ✓ Scanned certificates / IDs<br>
+    ✓ Direct scanner output (JPG/PNG)<br>
+    ✓ PDF pages exported as image
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("### ❌ Not Supported")
+    st.markdown("""
+    <div class="unsupported-box">
+    ✗ Screenshots of documents<br>
+    ✗ Web downloaded images<br>
+    ✗ WhatsApp / Telegram photos<br>
+    ✗ Social media images<br>
+    ✗ Photos of printed documents
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.success("✅ Model loaded") if model else st.error("❌ Model not found — place model_weights.pth in app folder")
     st.markdown(f"**Device:** `{DEVICE}`")
     st.markdown("**Model:** EfficientNet B4 + ELA")
 
@@ -331,6 +482,15 @@ col_upload, col_result = st.columns([1, 1], gap="large")
 
 with col_upload:
     st.markdown("### 📁 Upload Image")
+
+    # FIX 8: Added guidance text above uploader
+    st.markdown("""
+    <div class="info-box">
+    ℹ️ For best results upload a <strong>scanned document</strong> saved directly from your scanner.
+    Screenshots and web images are not supported.
+    </div>
+    """, unsafe_allow_html=True)
+
     uploaded_file = st.file_uploader(
         "Choose an image",
         type=["jpg", "jpeg", "png", "bmp", "tif", "tiff"],
@@ -338,15 +498,18 @@ with col_upload:
     )
 
     if uploaded_file:
-        image_pil   = Image.open(uploaded_file)
+        image_pil = Image.open(uploaded_file)
         st.image(image_pil, caption="Uploaded Image", use_column_width=True)
         analyze_btn = st.button("🔍 Analyze Image", use_container_width=True)
     else:
         st.markdown("""
         <div class="upload-zone">
             <div style="font-size:3rem;">📄</div>
-            <div style="margin-top:0.5rem;">Drop an image here or click to browse</div>
+            <div style="margin-top:0.5rem;">Drop a scanned document here or click to browse</div>
             <div style="font-size:0.8rem;margin-top:0.3rem;">Supports JPG, PNG, BMP, TIF</div>
+            <div style="font-size:0.75rem;margin-top:0.5rem;color:#444466;">
+                Prescriptions · Medical Reports · Certificates · ID Documents
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -355,69 +518,108 @@ with col_result:
 
     if uploaded_file and "analyze_btn" in dir() and analyze_btn:
         if not model:
-            st.error("⚠️ Model not loaded. Make sure full_model.pth is in the repo root.")
+            st.error("⚠️ Model not loaded. Place model_weights.pth in the app folder.")
         else:
-            with st.spinner("Analyzing image..."):
-                result = predict(image_pil, model, threshold)
+            with st.spinner("Validating and analyzing image..."):
 
-            is_forged    = result["is_forged"]
-            confidence   = result["confidence"]
-            forgery_type = result["forgery_type"]
-            description  = result["description"]
-            card_class   = "result-forged" if is_forged else "result-authentic"
-            verdict      = "⚠️ FORGED" if is_forged else "✅ AUTHENTIC"
-            bar_class    = "conf-bar-fill-forged" if is_forged else "conf-bar-fill-auth"
-            bar_width    = int(confidence * 100)
+                # FIX 9: Validate BEFORE predict
+                is_valid, validation_msg, is_blocked = validate_image(image_pil)
 
-            st.markdown(f"""
-            <div class="{card_class}">
-                <div class="result-title">{verdict}</div>
-                <div class="conf-bar-bg">
-                    <div class="{bar_class}" style="width:{bar_width}%"></div>
-                </div>
-                <div style="margin-top:0.8rem;">
-                    <div class="result-meta">CONFIDENCE</div>
-                    <div class="result-value">{confidence:.1%}</div>
-                </div>
-                <div style="margin-top:0.8rem;">
-                    <div class="result-meta">FORGERY TYPE</div>
-                    <div class="type-badge">{forgery_type.upper().replace("_"," ")}</div>
-                </div>
-                <div class="desc-box {'desc-box-forged' if is_forged else ''}">
-                    {description}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+                if is_blocked:
+                    # Show blocked message — do not run predict
+                    st.markdown(f"""
+                    <div class="result-warning">
+                        <div class="result-title">⚠️ CANNOT PROCESS</div>
+                        <div class="desc-box desc-box-warning">
+                            {validation_msg}
+                        </div>
+                        <div style="margin-top:1rem;font-size:0.85rem;color:#aaaacc;">
+                            <strong>Please upload:</strong><br>
+                            • A scanned prescription or medical document<br>
+                            • Saved directly from scanner as JPG or PNG<br>
+                            • Not a screenshot or web-downloaded image
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
-            st.markdown("### 🗺️ Forgery Heatmap")
-            viz_col1, viz_col2 = st.columns(2)
+                else:
+                    result = predict(image_pil, model, threshold)
 
-            with viz_col1:
-                fig, ax = plt.subplots(figsize=(4, 4))
-                fig.patch.set_facecolor("#0a0a0f")
-                ax.set_facecolor("#0a0a0f")
-                ax.imshow(result["heatmap"], cmap="hot")
-                ax.set_title("Suspicion Heatmap", color="#e8e8f0", fontsize=10, pad=8)
-                ax.axis("off")
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close()
+                    is_forged    = result["is_forged"]
+                    confidence   = result["confidence"]
+                    forgery_type = result["forgery_type"]
+                    description  = result["description"]
+                    low_conf     = result["low_confidence"]
 
-            with viz_col2:
-                fig, ax = plt.subplots(figsize=(4, 4))
-                fig.patch.set_facecolor("#0a0a0f")
-                ax.set_facecolor("#0a0a0f")
-                ax.imshow(result["overlay"])
-                ax.set_title("Overlay", color="#e8e8f0", fontsize=10, pad=8)
-                ax.axis("off")
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close()
+                    card_class   = "result-forged" if is_forged else "result-authentic"
+                    verdict      = "⚠️ FORGED" if is_forged else "✅ AUTHENTIC"
+                    bar_class    = "conf-bar-fill-forged" if is_forged else "conf-bar-fill-auth"
+                    bar_width    = int(confidence * 100)
+
+                    # FIX 10: Show validation warning if moderate quality
+                    if validation_msg:
+                        st.markdown(f"""
+                        <div class="warning-box">⚠️ {validation_msg}</div>
+                        """, unsafe_allow_html=True)
+
+                    # FIX 11: Show low confidence warning
+                    if low_conf:
+                        st.markdown("""
+                        <div class="warning-box">
+                        ⚠️ <strong>Low confidence result</strong> — model is uncertain about this image.
+                        The result may not be reliable. Consider uploading a higher quality scan.
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    st.markdown(f"""
+                    <div class="{card_class}">
+                        <div class="result-title">{verdict}</div>
+                        <div class="conf-bar-bg">
+                            <div class="{bar_class}" style="width:{bar_width}%"></div>
+                        </div>
+                        <div style="margin-top:0.8rem;">
+                            <div class="result-meta">CONFIDENCE</div>
+                            <div class="result-value">{confidence:.1%}</div>
+                        </div>
+                        <div style="margin-top:0.8rem;">
+                            <div class="result-meta">FORGERY TYPE</div>
+                            <div class="type-badge">{forgery_type.upper().replace("_"," ")}</div>
+                        </div>
+                        <div class="desc-box {'desc-box-forged' if is_forged else ''}">
+                            {description}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    st.markdown("### 🗺️ Forgery Heatmap")
+                    viz_col1, viz_col2 = st.columns(2)
+
+                    with viz_col1:
+                        fig, ax = plt.subplots(figsize=(4, 4))
+                        fig.patch.set_facecolor("#0a0a0f")
+                        ax.set_facecolor("#0a0a0f")
+                        ax.imshow(result["heatmap"], cmap="hot")
+                        ax.set_title("Suspicion Heatmap", color="#e8e8f0", fontsize=10, pad=8)
+                        ax.axis("off")
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                        plt.close()
+
+                    with viz_col2:
+                        fig, ax = plt.subplots(figsize=(4, 4))
+                        fig.patch.set_facecolor("#0a0a0f")
+                        ax.set_facecolor("#0a0a0f")
+                        ax.imshow(result["overlay"])
+                        ax.set_title("Overlay", color="#e8e8f0", fontsize=10, pad=8)
+                        ax.axis("off")
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                        plt.close()
 
     elif not uploaded_file:
         st.markdown("""
         <div style="color:#3a3a5a;text-align:center;padding:3rem 0;
                     font-family:'Space Mono',monospace;font-size:0.9rem;">
-            Upload an image and click<br>Analyze to see results here
+            Upload a scanned document and click<br>Analyze to see results here
         </div>
         """, unsafe_allow_html=True)
