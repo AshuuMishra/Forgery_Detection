@@ -372,7 +372,7 @@ def load_model():
 
 
 # ── FIX 3: Predict with threshold=0.40 and confidence gate ───────────────────
-def predict(image_pil, model, threshold=0.40):
+def predict(image_pil, model, threshold=0.50):
     image_rgb = np.array(image_pil.convert("RGB"))
     image_rgb = cv2.resize(image_rgb, (224, 224))
 
@@ -433,7 +433,7 @@ with st.sidebar:
     # FIX 6: Default threshold changed from 0.5 to 0.40
     threshold = st.slider(
         "Detection Threshold",
-        min_value=0.1, max_value=0.9, value=0.40, step=0.05,
+        min_value=0.1, max_value=0.9, value=0.50, step=0.05,
         help="Recommended: 0.40. Higher = stricter forgery detection, may miss some forgeries. Lower = more sensitive, may flag authentic images."
     )
 
